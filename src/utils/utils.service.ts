@@ -1,52 +1,69 @@
+import { DbEnum } from "../enums/DbEnum";
 import { HighwayEnum } from "../enums/highway.enum";
 import { SurfaceEnum } from "../enums/surface.enum";
+import { PositionModelDto } from "../models/PositionModelDto";
 
-export function calculateZoneId(userPosition: { lat: { toString: () => string; }; lng: { toString: () => string; }; }) {
-
-    var latitude;
-    var latSplitted = userPosition.lat.toString().split(".");
-
-    var longitude;
-    var lngSplitted = userPosition.lng.toString().split(".");
-
-    if (!!latSplitted[1]) {
-        var decimalValue = parseFloat("0." + latSplitted[1]);
-        var decimal = decimalValue - parseFloat("0." + latSplitted[1][0]);
-        if (decimal < 0.01) {
-            latitude = parseFloat(latSplitted[0]);
-            latitude = latitude + "." + latSplitted[1][0] + "0";
-        } else if (decimal < 0.05) {
-            latitude = parseFloat(latSplitted[0] + "." + latSplitted[1][0]).toFixed(2).toString();
+export function calculateZoneId(position: PositionModelDto ) {
+    var pos = new PositionModelDto(0,0);
+    try {
+        if(!!position && !!position.lat && !!position.lng) {
+            var latitude: string = "";
+            var latSplitted = position.lat.toString().split(".");
+        
+            var longitude: string = "";
+            var lngSplitted = position.lng.toString().split(".");
+        
+            if (!!latSplitted[1]) {
+                var decimalValue = parseFloat("0." + latSplitted[1]);
+                var decimal = decimalValue - parseFloat("0." + latSplitted[1][0]);
+                if (decimal < 0.01) {
+                    latitude = parseFloat(latSplitted[0]).toString();
+                    latitude = latitude + "." + latSplitted[1][0] + "0";
+                } else if (decimal < 0.05) {
+                    latitude = parseFloat(latSplitted[0] + "." + latSplitted[1][0]).toFixed(2).toString();
+                } else {
+                    latitude = parseFloat(latSplitted[0] + "." + latSplitted[1][0] + "5").toString();
+                }
+            }
+        
+            if (!!lngSplitted[1]) {
+                var decimalValue = parseFloat("0." + lngSplitted[1]);
+                var decimal = decimalValue - parseFloat("0." + lngSplitted[1][0]);
+                if (decimal < 0.01) {
+                    longitude = parseFloat(lngSplitted[0]).toString();
+                    longitude = longitude + "." + lngSplitted[1][0] + "0";
+                } else if (decimal < 0.05) {
+                    longitude = parseFloat(lngSplitted[0] + "." + lngSplitted[1][0]).toFixed(2).toString();
+                } else {
+                    longitude = parseFloat(lngSplitted[0] + "." + lngSplitted[1][0] + "5").toString();
+                }
+            }
+            pos.lat = parseFloat(latitude);
+            pos.lng = parseFloat(longitude);
+            return pos;
         } else {
-            latitude = parseFloat(latSplitted[0] + "." + latSplitted[1][0] + "5").toString();
+            console.error("position in undefined in method calculateZoneId [AlgorithmUtilService]");
+        }     
         }
+    catch(error) {
+        console.error("An error occurred in method calculateZoneId [AlgorithmUtilService]: " + error);
     }
-
-    if (!!lngSplitted[1]) {
-        var decimalValue = parseFloat("0." + lngSplitted[1]);
-        var decimal = decimalValue - parseFloat("0." + lngSplitted[1][0]);
-        if (decimal < 0.01) {
-            longitude = parseFloat(lngSplitted[0]);
-            longitude = longitude + "." + lngSplitted[1][0] + "0";
-        } else if (decimal < 0.05) {
-            longitude = parseFloat(lngSplitted[0] + "." + lngSplitted[1][0]).toFixed(2).toString();
-        } else {
-            longitude = parseFloat(lngSplitted[0] + "." + lngSplitted[1][0] + "5").toString();
-        }
-    }
-
-    return [longitude, latitude];
+    return pos;
 
 }
 
 
-export function earthDistance(startCoordinate: any[], endCoordinate: any[]) {
-    //approximate radius of earth in km
+export function earthDistance(startCoordinate: any, endCoordinate: any) {
     var R = 6373.0
     var lon1 = deg2rad(startCoordinate[0]);
     var lat1 = deg2rad(startCoordinate[1]);
-    var lon2 = deg2rad(endCoordinate[0]);
-    var lat2 = deg2rad(endCoordinate[1]);
+    if(endCoordinate.lat == undefined) {
+        var lon2 = deg2rad(endCoordinate[0]);
+        var lat2 = deg2rad(endCoordinate[1]);
+    } else {
+        var lon2 = deg2rad(endCoordinate.lng);
+        var lat2 = deg2rad(endCoordinate.lat);
+    }
 
     var dlon = lon2 - lon1;
     var dlat = lat2 - lat1;
@@ -138,3 +155,28 @@ export function colorByTrack(element: { p: { [x: string]: string; }; }, isAerial
 
     return "#4287f5";
   }
+
+  export function getClosestKey(position: PositionModelDto, collection: any, type: DbEnum): any {
+    var mindist: any = undefined;
+    var closestNode: any = undefined;
+
+    //TODO prendere points dal DB 
+    if(type == DbEnum.Nodes) {
+        collection.forEach((node:any) => {
+            var distance = earthDistance(node.po.coordinates, position);
+            if (mindist == undefined || distance < mindist) {
+                closestNode = node;
+                mindist = distance;
+            }
+    });
+    } else {
+        collection.forEach((point:any) => {
+            var distance = earthDistance(point.c, position);
+            if (mindist == undefined || distance < mindist) {
+                closestNode = point;
+                mindist = distance;
+            }
+    });
+    }
+    return closestNode;
+}

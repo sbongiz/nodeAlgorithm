@@ -1,4 +1,5 @@
 import { EntityTypeEnum } from "../enums/entityTypeEnum.enum";
+import { PositionModelDto } from "../models/PositionModelDto";
 import { AlgorithmRepository } from "../repository/algorithm.repository";
 import { DijkstraService } from "./dijkstra.service";
 import { MetricsService } from "./metrics.service";
@@ -21,6 +22,8 @@ export default {
     var algorithmRepository = new AlgorithmRepository();
     var metricsService = new MetricsService(); 
     var ds = new DijkstraService(algorithmRepository,metricsService);
-    ds.dijkstra(start,end,options);
+    var startPo = new PositionModelDto(start[1],start[0]);
+    var endPo = new PositionModelDto(end[1],end[0]);
+    return ds.dijkstra(startPo,endPo,options);
 
     }

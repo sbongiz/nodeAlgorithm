@@ -1,1299 +1,586 @@
-import * as mapboxgl from 'mapbox-gl';
-import { EntityTypeEnum } from '../enums/entityTypeEnum.enum';
-import { calculateZoneId, colorByTrack, earthDistance, existProhibitions } from '../utils/utils.service';
-import * as lodash from 'lodash';
-import { of } from 'rxjs';
 import { ReturnPointModel } from '../models/ReturnPoint.model';
 import { GeoJson, Geometry } from '../models/GeoJson.model';
 import { AlgorithmPropertiesModel } from '../models/AlgorithmProperties.model';
 import { MetricsService } from './metrics.service';
 import { AlgorithmRepository } from '../repository/algorithm.repository';
-
+import { DistanceFromStartDto } from '../models/DistanceFromStartDto';
+import { PositionModelDto } from '../models/PositionModelDto';
+import { ActivityTypeEnum } from '../enums/ActivityTypeEnum';
+import { calculateZoneId, earthDistance, getClosestKey } from '../utils/utils.service';
+import { DbEnum } from '../enums/DbEnum';
+import { max, min, toNumber, uniqWith } from "lodash";
+import { EntityTypeEnum } from '../enums/entityTypeEnum.enum';
+const {performance} = require('perf_hooks');
 export class DijkstraService {
+
+
+    private distanceFromStart = new Map<any, DistanceFromStartDto>(); // Map of nodes with cost
+    private nodeCountLength = 0;
+
+    private endingNodes: any;
+    private startingNodes: any;
+    private previousNodes = new Map<any, any>(); //Map of previous optimal node visited, it's used at the end to retrive the path
+    private previousTracks = new Map<any, any>(); //Map of previous optimal tracks visited, it's used at the end to retrive the path
+    private visitedNodes = new Map<any, any>();; //Map of previous node visited;
+
+    private arraySorted: any = []
+
+    private zoneToBe: any;
+
+    private elevationDelta: number = 200;
+    private aStartLambda: number = 0.3;
+
+    private isHike: any;
+    private isAerialWay: any;
+    private isPiste: any;
+
+    private algorithmFinish: boolean = false;
 
     constructor(
         private algorithmRepository: AlgorithmRepository,
         private metricsService: MetricsService
     ) { }
 
-    private aStartLambda: number = 0.3;
-    private elevationLambda: number = 0.3;
-    private elevationDelta: number = 200;
-    private options: any; //options to apply to the algorthm
-    private startingNodes: any[] = []; // array with nearest nodes to startingPoint (max 2)
-    private endingNodes: any[] = []; // array with nearest nodes to endingPoint (max 2)
-    private startTrack: any; // track in which the starting point belong
-    private endTrack: any; //track in which the ending point belong
-    private previousNodes = new Map<any, any>(); //Map of previous optimal node visited, it's used at the end to retrive the path
-    private visitedNodes = new Map<any, any>();; //Map of previous node visited;
-    private distanceFromStart = new Map<any, any>(); // Map of nodes with cost
-    private previousTracks = new Map<any, any>(); // Map of tracks visited
-    private actualCost: any;
-    private result: any[] = []; //result of pathfinding
-
-    private algorithmHasFinished = false;
-    //Response fields
-    private overallAscent = 0;
-    private overallDescent = 0;
-    private time: any = [];
-
-    private startingPoint: any;
-    private endingPoint: any;
-    private visitedZones: any[] = [];
-    private startZoneId: any;
-    private endZoneId: any;
-    private maxElevation: any;
-    private minElevation: any;
-
-    private abortCalculating = false;
-
-    //AIR
-    private useAerialWayElements: any;
-    private aNodes: any;
-    private stations: any;
-    private aerialway: any;
-
-    //PISTE
-    private usePiste: any;
-    //NAVIGATION
-    private nodeByZoneId: any;
-    private tracksByZoneId: any;
-    private pointsByZoneId: any;
-
-    private usedStationStart: any[] = [];
-    private usedStationEnd: any[] = [];
-    private isRunning = false;
-    private usePendenza = true;
-    public setAbortCalculating(value: boolean) {
-        this.abortCalculating = value;
-    }
-
-    public async dijkstra(start: any[], end: any[], options: { mainActivity: string; }) {
-        console.time('algo')
-        this.isRunning = true;
-
-        this.abortCalculating = false;
-        //var findStartEndStartTime = performance.now();
-        this.options = options;
-        //var overallStartTime = performance.now();
-
-        this.useAerialWayElements = (options.mainActivity == 'aerialway' ? true : false) || (options.mainActivity == 'ski' ? true : false);
-        this.usePiste = options.mainActivity == 'ski' ? true : false;
 
 
-        this.startZoneId = calculateZoneId(new mapboxgl.LngLat(start[0], start[1]));
-        console.log("Start ZONE: " + this.startZoneId);
-        this.endZoneId = calculateZoneId(new mapboxgl.LngLat(end[0], end[1]));
-        console.log("End ZONE: " + this.endZoneId);
+    async dijkstra(start: PositionModelDto, end: PositionModelDto, options: any): Promise<any> {
+        try {
+            var container: any;
+            var ovrallStart = performance.now();
 
-        if (this.usePiste) {
-            this.nodeByZoneId = await this.algorithmRepository.findAllNodesPiste();
-            this.tracksByZoneId = await this.algorithmRepository.findAllTracksPiste();
-            this.pointsByZoneId = await this.algorithmRepository.findAllPointsPiste();
-        } else {
-            this.nodeByZoneId = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Nodes, this.startZoneId);
-            this.tracksByZoneId = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Tracks, this.startZoneId);
-            this.pointsByZoneId = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Points, this.startZoneId);
-        }
+            var totalFindStartEndZone = 0
+            var totalAddStartEndZone = 0
+            var totalGetClosestKey = 0;
+            var totalSetVisitedZones = 0;
+            var totalfindStartEndNodes = 0;
+            var totalfindStartEndTrack = 0;
+            var totalInitDistance = 0;
+            var totalFindCurrentNode = 0;
+            var totalFindNodeByZoneAndId = 0;
+            var totalFindNeigbor = 0;
+            var totalFindTracks = 0
+            var totalMinTrack = 0
+            var totalSetDistance = 0
+            var totalLoadNewZone = 0;
+            var totalFindRectangle = 0;
+
+            this.isHike = options.mainActivity == ActivityTypeEnum.HIKE ? true : false;
+            this.isAerialWay = (options.mainActivity == ActivityTypeEnum.AERIALWAY ? true : false);
+            this.isPiste = options.mainActivity == ActivityTypeEnum.SKI ? true : false;
+
+            //TODO TEMPORARY RESET, da togliere successivamente ai test
+            this.algorithmRepository.resetData();
+            this.resetVariables();
 
 
-        if (options.mainActivity == 'aerialway') {
-            this.aNodes = await this.algorithmRepository.findAllANodes();
-            this.stations = await this.algorithmRepository.findAllStations();
-            this.aerialway = await this.algorithmRepository.findAllAerialway();
-        }
-        if (this.usePiste) {
-            this.aNodes = await this.algorithmRepository.findAllANodesPiste();
-            this.stations = await this.algorithmRepository.findAllStationsPiste();
-            this.aerialway = await this.algorithmRepository.findAllAerialwayPiste();
-        }
+            // 1) FIND START END ZONE
+            var p1 = performance.now();
+            var startZoneId: PositionModelDto = calculateZoneId(start);
+            var endZoneId: PositionModelDto = calculateZoneId(end);
+            this.zoneToBe = this.findZoneRectangle(startZoneId, endZoneId)
+            var p2 = performance.now();
+            totalFindStartEndZone += p2 - p1
+            
+            // 2) LOAD DATA FROM START END ZONE
+            var p1 = performance.now();
 
+            if (this.isHike) {
+                await this.addZoneToData(startZoneId);
 
-        if (this.endZoneId.some((v: any, i: string | number) => v !== this.startZoneId[i])) {
-            var newNodes;
-            var newPoints;
-            var newTracks;
-            if (!(options.mainActivity == 'ski')) {
-                newNodes = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Nodes, this.endZoneId);
-                newPoints = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Points, this.endZoneId);
-                newTracks = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Tracks, this.endZoneId);
-                this.nodeByZoneId.push(...newNodes);
-                this.pointsByZoneId.push(...newPoints);
-                this.tracksByZoneId.push(...newTracks);
+                if (!startZoneId.equals(endZoneId)) {
+                    await this.addZoneToData(endZoneId);
+                }
             }
 
-        }
+            var p2 = performance.now();
+            totalAddStartEndZone += p2 - p1
 
+            // 3) GET CLOSEST KEY
+            var p1 = performance.now();
+            var startingPoint: any = getClosestKey(start, this.algorithmRepository.findPointsByZone(startZoneId), DbEnum.Points);
+            var endingPoint: any = getClosestKey(end, this.algorithmRepository.findPointsByZone(endZoneId), DbEnum.Points);
+            var p2 = performance.now();
+            totalGetClosestKey += p2 - p1
 
-        this.nodeByZoneId = lodash.uniqWith(this.nodeByZoneId, (nodeA: any, nodeB: any) => nodeA.i === nodeB.i && nodeA.x === nodeB.x && nodeA.y == nodeB.y);
-        this.tracksByZoneId = lodash.uniqWith(this.tracksByZoneId, (trackA: any, trackB: any) => trackA.i === trackB.i && trackA.x === trackB.x && trackA.y === trackB.y);
+            //FIND THINGS
 
-        this.algorithmRepository.setRepository(this.nodeByZoneId, this.tracksByZoneId, this.pointsByZoneId, this.stations, this.aNodes, this.aerialway);
+            var minElevation = min([startingPoint.e, endingPoint.e]);
+            var maxElevation = max([startingPoint.e, endingPoint.e]);
+            minElevation -= this.elevationDelta;
+            maxElevation += this.elevationDelta;
 
-        this.startingPoint = this.getClosestKey(start);
-        this.endingPoint = this.getClosestKey(end);
+            //4) ADD ZONE ALREADY VISITED
+            var p1 = performance.now();
+            var visitedZones: any = []
+            visitedZones.push([startingPoint.x, startingPoint.y]);
+            if (!startZoneId.equals(endZoneId)) {
+                visitedZones.push([endingPoint.x, endingPoint.y]);
+            }
+            var p2 = performance.now();
+            totalSetVisitedZones += p2 - p1
 
-        this.visitedZones.push([this.startingPoint.x, this.startingPoint.y]);
-        this.visitedZones.push([this.endingPoint.x, this.endingPoint.y]);
+            // 5) FIND START END NODES
+            var p1 = performance.now();
+            this.startingNodes = this.findStartNodes(startingPoint, startZoneId);
+            this.endingNodes = this.findEndNodes(endingPoint, endZoneId);
+            var p2 = performance.now();
+            totalfindStartEndNodes += p2 - p1
 
-        if (this.startingPoint.e < this.endingPoint.e) {
-            this.minElevation = this.startingPoint.e - this.elevationDelta;
-            this.maxElevation = this.endingPoint.e + this.elevationDelta;
-        } else {
-            this.minElevation = this.endingPoint.e - this.elevationDelta;
-            this.maxElevation = this.startingPoint.e + this.elevationDelta;
-        }
+            // 6) FIND START END TRACK
+            var p1 = performance.now();
+            var startTracks = this.algorithmRepository.filterTracksByPoint(startingPoint, calculateZoneId(new PositionModelDto(startingPoint.c[1], startingPoint.c[0])));
+            var endTracks = this.algorithmRepository.filterTracksByPoint(endingPoint, calculateZoneId(new PositionModelDto(endingPoint.c[1], endingPoint.c[0])));
+            //Da togliere dopo implementazione punto A)
+            startTracks = uniqWith(startTracks, (trackA: any, trackB: any) => trackA.i === trackB.i);
+            endTracks = uniqWith(endTracks, (trackA: any, trackB: any) => trackA.i === trackB.i);
+            var p2 = performance.now();
+            totalfindStartEndTrack += p2 - p1
 
-        //Check if starting and ending node have prohibitions for the activity
-        var errorCode = this.checkProhibitionsAndReturnErrorCode(this.startingPoint, this.endingPoint);
-        if (errorCode != null) {
-            return errorCode;
-        }
+            // 7) INITIALIZE DISTANCEFROMSTART
+            var p1 = performance.now();
 
+            for (const node of this.startingNodes) {
+                var distance = earthDistance(startingPoint.c, node.po.coordinates);
+                var pendenza = ((node.po.elevation - startingPoint.e) / (distance * 1000)) * 100;
+                var cost = await this.metricsService.getCost(startTracks[0], options, distance, pendenza);
+                var distanceElement = new DistanceFromStartDto(node.i, cost, toNumber(node.y), toNumber(node.x));
+                this.distanceFromStart.set(node.i, distanceElement);
 
-        this.findStartNodes(this.startingNodes, this.startingPoint, this.startTrack[0], this.distanceFromStart);
-        this.findEndNodes(this.endingNodes, this.endingPoint, this.endTrack[0]);
-
-        this.nodeByZoneId.forEach((node: { i: any; }) => {
-            this.previousNodes.set(node.i, null);
-            this.visitedNodes.set(node.i, 0);
-        });
-
-        if (this.useAerialWayElements) {
-            this.aNodes.forEach((node: { i: any; }) => {
-                this.previousNodes.set(node.i, null);
-                this.visitedNodes.set(node.i, 0);
-            });
-        }
-
-        var nodeCount = 0
-        //var findStartEndEndTime = performance.now();
-        //console.log(`[A] First part of dijkstra took ${findStartEndEndTime - findStartEndStartTime} milliseconds`)
-
-        //var overallWhileStartTime = performance.now();
-        var nodeCountLength = this.nodeByZoneId.length;
-        if (this.useAerialWayElements) {
-            nodeCountLength += this.aNodes.length
-        }
-        while (nodeCount < nodeCountLength) {
-            nodeCount += 1;
-            var isCurrentNodeANode = false;
-            var currentNodeId: any;
-
-            currentNodeId = this.findCurrentNodeId();
-
-
-            //console.log("Current Node ID: " + currentNodeId + " Distance from start: " + this.distanceFromStart.get(currentNodeId));
-            // If current_node's distance is INFINITY, the remaining unvisited
-            // nodes are not connected to start_node, so we're done.
-            if (this.distanceFromStart.get(currentNodeId) == undefined || currentNodeId == undefined) {
-                break;
+                if (this.arraySorted.length > 0) {
+                    this.arraySorted.splice(this.binarySearch(this.arraySorted, distanceElement, this.comp), 0, distanceElement)
+                } else {
+                    this.arraySorted.push(distanceElement)
+                }
             }
 
-            if (this.abortCalculating) {
+            var p2 = performance.now();
+            totalInitDistance += p2 - p1
+
+            //CHECK PROHIBITIONS
+            //TODO
+
+            if (this.startingNodes.length == 0 || this.endingNodes.length == 0) {
                 this.resetVariables();
                 return null;
             }
 
-            var currentNode = this.algorithmRepository.findNodeById(currentNodeId, (this.useAerialWayElements));
-            var currentAnodeConnected = currentNode.a;
-            if (this.useAerialWayElements && this.algorithmRepository.isCurrentNodeANode(currentNodeId)) {
-                //console.log("ANode as currentNodeId: " + currentNodeId);
-                isCurrentNodeANode = true;
-                currentNode = this.algorithmRepository.findANodeFromId(currentNodeId);
-            }
+            var nodeCount = 0
 
-            //Aggiunge aNode connessi tra loro in salita non più di 10 metri
-            if (currentAnodeConnected.length > currentNode.a.length) {
-                currentAnodeConnected.forEach((aNodeId: any) => {
-                    var aNode = this.algorithmRepository.findANodeFromId(aNodeId);
-                    if (aNode != undefined) {
-                        if (Math.abs(currentNode.po.elevation - aNode.po.elevation) < 10) {
-                            if (!currentNode.a.includes(aNodeId)) {
-                                currentNode.a.push(aNodeId);
-                            }
-                        }
-                    }
-                });
-            }
+            while (nodeCount < this.nodeCountLength) {
+                nodeCount += 1;
+                // 8) FIND NODE WITH MINIMUM COST AND SET TO CURRENTNODE
+                var p1 = performance.now();
+                var distanceFromStartElement;
 
-            this.visitedNodes.set(currentNodeId, 1);
-
-
-            // For each neighbor of current_node, check whether the total distance
-            // to the neighbor via current_node is shorter than the distance we
-            // currently have for that node. If it is, update the neighbor's values
-            // for distance_from_start and previous_node.
-
-            var ptConnected = currentNode.n;
-
-            //Se arielway mergiare currentNode.n + currenNode.an (aerialway node)
-            if (this.useAerialWayElements) {
-                if (currentNode.a.length > 0) {
-                    ptConnected.push(...currentNode.a);
+                while (this.visitedNodes.get(this.arraySorted[0].id) == 1) {
+                    this.arraySorted.shift();
                 }
-            }
-            //var startPtConnected = performance.now();
+                distanceFromStartElement = this.arraySorted[0];
 
-            for (const neighborId of ptConnected) {
-                var nextNode = this.algorithmRepository.findNodeById(neighborId, this.useAerialWayElements);
+                var p2 = performance.now();
+                totalFindCurrentNode += p2 - p1
 
+                if (distanceFromStartElement.cost == undefined || distanceFromStartElement == undefined) {
+                    break;
+                }
 
-                if (nextNode) {
+                //9) FIND NODE IN REPO
+                var p1 = performance.now();
+                var currentNode = this.algorithmRepository.findNodeById(distanceFromStartElement.id);
+                var p2 = performance.now();
+                totalFindNodeByZoneAndId += p2 - p1
 
-                    if (this.useAerialWayElements && currentNode.a.length > 0 && currentNode.a.includes(neighborId)) {
-                        if (currentNode.d.get(neighborId.toString()) == undefined) {
-                            currentNode.d.set(neighborId.toString(), nextNode.d.get(currentNode.i.toString()));
+                //SET NODE TO VISITED
+                this.visitedNodes.set(currentNode.i, 1);
+
+                var ptConnected = currentNode.n;
+
+                //CHECK NEIGHBOR
+                for (const neighborId of ptConnected) {
+                    // 10) FIND NEIGHBOR
+                    var p1 = performance.now()
+                    var neighbor = this.algorithmRepository.findNodeById(neighborId);
+                    var p2 = performance.now()
+                    totalFindNeigbor += p2 - p1
+                    if (neighbor) {
+
+                        //CHECK TRACK INTEGRITY
+
+                        // 11) FIND TRACKS THAT CONTAINS THE TWO NODES
+                        var p1 = performance.now();
+                        var trackList = this.findTracks(currentNode, neighbor);
+                        var p2 = performance.now();
+                        totalFindTracks += p2 - p1
+                        var p1 = performance.now();
+                        // 12) FIND THE MINIMUM TRACK COST
+                        var trackWithMinimumCost: any = null;
+                        var minimumCost: any = null;
+                        for (const element of trackList) {
+                            var cost = await this.metricsService.getCost(element, options, earthDistance(currentNode.po.coordinates, neighbor.po.coordinates), 0) // TODO, capire se gestire pendenza per la getCost
+                            if (minimumCost == null || cost < minimumCost) {
+                                minimumCost = cost;
+                                trackWithMinimumCost = element;
+                            }
                         }
-                        if (currentNode.t.get(neighborId.toString()) == undefined) {
-                            currentNode.t.set(neighborId.toString(), nextNode.t.get(currentNode.i.toString()));
-                        }
-                    }
+                        var p2 = performance.now();
+                        totalMinTrack += p2 - p1
 
-                    var trackId = this.findTrackWithMinimumCost(currentNode, nextNode.i);
-                    //Trovato l'indice della track tra A e B pià corta, lo uso in connecterTracks per prendere la track effeettiva!)
+                        var newCost = this.distanceFromStart.get(currentNode.i)?.cost + minimumCost;
 
-                    // prendo la distanza 1, vado in connected tracks, prendo la prima e con i params ci calcolo il costo (gli id di connected_distance e connected_tracks combaciano), stessa cosa per quelle successive 
-                    var track = this.algorithmRepository.findTrackById(trackId);
+                        var distanceFromStartNeighbor: DistanceFromStartDto | undefined = this.distanceFromStart.get(neighborId);
 
-                    var shouldCalculate = track == undefined ? false : true;
-                    if (this.usePiste) {
-                        var indexCurrentOnTrack = track.t.indexOf(currentNodeId);
-                        var indexNextNodeOnTrack = track.t.indexOf(nextNode.i);
-                        var oneWayProp = track.p["oneway"];
-                        var oneWay = false;
-                        if (oneWayProp.length == 0 || oneWayProp.includes("yes")) {
-                            oneWay = true
-                        }
+                        var dist = earthDistance(neighbor.po.coordinates, end);
+                        newCost += (this.aStartLambda * dist);
 
-                        //TODO Capire se lasciare il check su elevazione, nel caso per arrivare a Pinzolo centro, l'ultimo tratto prima della seggiovia è in salita... quindi lui non lo prenderebbe senza check su elevation
-                        if (indexCurrentOnTrack > indexNextNodeOnTrack && oneWay && (Math.abs(currentNode.po.elevation - nextNode.po.elevation) > 10)) {
-                            //Vuol dire che la traccia che sto tendeno in cosiderazione è in salita (succede quando punto di partenza e arrivo è uguale sia per una traccia che per una aerialway [Vedi PATASCOSS])
-                            shouldCalculate = false;
-                        }
-                    }
-
-                    if (shouldCalculate) {
-                        if (this.actualCost == undefined) {
-                            //next
-                        }
-
-                        var newPath = this.distanceFromStart.get(currentNodeId) + this.actualCost;
-                        var dist = earthDistance(nextNode.po.coordinates, end);
-                        newPath += (this.aStartLambda * dist);
-
-                        if (this.usePendenza) {
-                            if ((nextNode.po.elevation > this.maxElevation || nextNode.po.elevation < this.minElevation) && nextNode.po.elevation != -1) {
-                                var elevationDist = earthDistance(currentNode.po.coordinates, nextNode.po.coordinates);
-                                newPath += (this.elevationDelta * elevationDist);
+                        if (options.mainActivity == "hike") {
+                            //AGGIUNGE PESO SE SCENDO SOTTO L?ELEVAZIONE MINIMA O SOPRA A QUELLA MASSIMA 
+                            if ((neighbor.po.elevation > maxElevation || neighbor.po.elevation < minElevation) && neighbor.po.elevation != -1) {
+                                var elevationDist = earthDistance(currentNode.po.coordinates, neighbor.po.coordinates);
+                                newCost += (this.elevationDelta * elevationDist);
                             }
                         }
 
+                        // 13) SET DISTANCE
+                        var p1 = performance.now();
                         if (!this.distanceFromStart.has(neighborId)) {
-                            this.distanceFromStart.set(neighborId, undefined);
+                            this.distanceFromStart.set(neighborId, new DistanceFromStartDto(undefined, undefined, undefined, undefined));
                         }
-                        if ((this.distanceFromStart.get(neighborId) == undefined) || (newPath < this.distanceFromStart.get(neighborId))) {
-                            this.distanceFromStart.set(neighborId, newPath);
+                        if (distanceFromStartNeighbor == undefined || (!!distanceFromStartNeighbor?.cost && (newCost < distanceFromStartNeighbor.cost))) {
+                            var distanceElement = new DistanceFromStartDto(neighbor.i, newCost, toNumber(neighbor.y), toNumber(neighbor.x))
+                            this.distanceFromStart.set(neighborId, distanceElement);
+                            this.arraySorted.splice(this.binarySearch(this.arraySorted, distanceElement, this.comp), 0, distanceElement)
                             this.previousNodes.set(neighborId, currentNode);
-                            this.previousTracks.set(neighborId, track);
+                            this.previousTracks.set(neighborId, trackWithMinimumCost);
                         }
-                    }
-
-
-
-                } else {
-                    // Questo sarebbe il caso in cui devo caricare il nuovo TILE perchè sto arrivando verso il bordo
-                    // calcolare zone da connectedTracks
-                    var newZoneIdToLoad = this.getNewZoneIdToLoad(currentNode, neighborId);
-                    for (const zoneId of newZoneIdToLoad) {
-                        console.log("NEW ZONE LOADED: " + zoneId);
-                        if (this.usePiste) {
-                            // newNodes = await this.utilsService.getDataFromAssets(RepositoryEnum.PNodes, zoneId);
-                            // newPoints = await this.utilsService.getDataFromAssets(RepositoryEnum.PPoints, zoneId);
-                            // newTracks = await this.utilsService.getDataFromAssets(RepositoryEnum.PTracks, zoneId);
-                        } else {
-                            var newNodes: any = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Nodes, zoneId);
-                            var newPoints: any = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Points, zoneId);
-                            var newTracks: any = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Tracks, zoneId);
-                            this.nodeByZoneId.push(...newNodes);
-                            this.pointsByZoneId.push(...newPoints);
-                            this.tracksByZoneId.push(...newTracks);
-
-                            nodeCountLength = this.nodeByZoneId.length;
-                            newNodes.forEach((node: { i: any; }) => {
-                                //Capire performance
-                                if (this.previousNodes.get(node.i) == undefined) {
-                                    this.previousNodes.set(node.i, null);
-                                }
-                                if (this.visitedNodes.get(node.i) != 1) {
-                                    this.visitedNodes.set(node.i, 0);
+                        var p2 = performance.now();
+                        totalSetDistance += p2 - p1;
+                    } else {
+                        // B) LOAD NEW ZONE
+                        var p1 = performance.now();
+                        var newZoneIds: any = [];
+                        var connectedTracks: any = new Map(Object.entries(currentNode.t));
+                        var trackIds = connectedTracks.get(neighborId.toString());
+                        trackIds.forEach((trackId: any) => {
+                            var track = this.algorithmRepository.findTrackById(trackId);
+                            track.z.forEach((zoneId: any) => {
+                                var notIncluded = !visitedZones.some((a: any) => zoneId.every((v: any, i: any) => v === a[i]));
+                                if (notIncluded) {
+                                    newZoneIds.push(zoneId);
+                                    visitedZones.push(zoneId);
                                 }
                             });
-                            this.algorithmRepository.setRepository(this.nodeByZoneId, this.tracksByZoneId, this.pointsByZoneId, this.stations, this.aNodes, this.aerialway);
-                        }
-
-                        //Capire se qui sopra si può sostituire direttamente non avendo in memoria tutti i dati (togliendo quelli appena utilizzati);
-                        //Probabilmente mi servono ancora per il ciclo dopo, ma poi si potrebbero rimuovere
-                        this.visitedNodes.set(currentNodeId, 0); //Questa riga è stata cambiata dall'estate! prima era al di guori del ciclo
-                    }
-                }
-            }
-            //var endPtConnected = performance.now();
-            //console.log(`PtConnected took ${endPtConnected - startPtConnected} milliseconds with ` + ptConnected.length + "ptConnected")
-            //Se c'è il filtro aerialway attivo TESTARE ANDALO CENTRO - CIMA PAGANELLA
-            if (isCurrentNodeANode) { //air
-                //OLD allora...current_node avrà una properetà in cui ci sarà l'id della stazione più vicina... (connectedStation)
-                //OLD dal nodo stazione, avrò tutte le stazioni collegate (1 se normale, 2 se c'è la stazione intermedia),in questi node stazioni ci sarà una proprietà  che mi dice il connectedNode
-                this.usePendenza = false;
-                //Calcolo costo traccia air 
-                var startStations = this.algorithmRepository.findStationsByANode(currentNode);
-
-                for (const startStation of startStations) {
-                    var aerialTracks = this.algorithmRepository.findAerialwayByStation(startStation);
-                    var stationList = []
-                    if (!this.usedStationStart.includes(startStation.i)) {
-                        if (!startStation.n.includes(startStation.i)) {
-                            this.usedStationStart.push(startStation.i);
-                        }
-                        if (!this.isStationClosed(startStation, true)) {
-                            for (const aerialTrack of aerialTracks) {
-                                stationList = this.algorithmRepository.findStationsByAerialway(aerialTrack, startStation.i);
-
-                                if (!!currentNode && !!startStation && stationList.length > 0) {
-
-                                    for (const endStation of stationList) {
-                                        if (!this.usedStationEnd.includes(endStation.i)) {
-                                            if (!endStation.n.includes(endStation.i)) {
-                                                this.usedStationEnd.push(endStation.i)
-                                            }
-                                            if (!this.isStationClosed(endStation, false)) {
-                                                var aerialNeighbors = this.algorithmRepository.findANodesByStation(endStation);
-                                                for (const aerialNeighbor of aerialNeighbors) {
-                                                    if (!!aerialNeighbor) {
-
-                                                        var newZoneIds = [];
-                                                        if (!this.visitedZones.some(a => [aerialTrack.x, aerialTrack.y].every((v, i) => v === a[i]))) {
-                                                            //Aggiungo nel caso in cui non siano già state caricate, tutte le zone della aerialway, comrpesa se stessa (se parto da una stazione a monte, e a valle cambia zona, può essere che non abbia caricato).
-                                                            newZoneIds.push([aerialTrack.x, aerialTrack.y]);
-                                                        }
-                                                        aerialTrack.z.forEach((zoneId: any[]) => {
-                                                            var notIncluded = !this.visitedZones.some(a => zoneId.every((v: any, i: string | number) => v === a[i]));
-                                                            if (notIncluded) {
-                                                                newZoneIds.push(zoneId);
-                                                                this.visitedZones.push(zoneId);
-                                                            }
-                                                        });
-
-                                                        for (const zoneId of newZoneIds) {
-                                                            console.log("NEW ZONE LOADED: " + zoneId);
-
-                                                            if (this.usePiste) {
-                                                                // newNodes = await this.utilsService.getDataFromAssets(RepositoryEnum.PNodes, zoneId);
-                                                                // newPoints = await this.utilsService.getDataFromAssets(RepositoryEnum.PPoints, zoneId);
-                                                                // newTracks = await this.utilsService.getDataFromAssets(RepositoryEnum.PTracks, zoneId);
-                                                            } else {
-                                                                var newNodes: any = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Nodes, zoneId);
-                                                                var newPoints: any = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Points, zoneId);
-                                                                var newTracks: any = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Tracks, zoneId);
-
-                                                                this.nodeByZoneId.push(...newNodes);
-                                                                this.pointsByZoneId.push(...newPoints);
-                                                                this.tracksByZoneId.push(...newTracks);
-
-                                                                nodeCountLength = this.nodeByZoneId.length;
-
-                                                                newNodes.forEach((node: { i: any; }) => {
-                                                                    if (this.previousNodes.get(node.i) == undefined) {
-                                                                        this.previousNodes.set(node.i, null);
-                                                                        this.visitedNodes.set(node.i, 0);
-                                                                    }
-                                                                });
-                                                                this.algorithmRepository.setRepository(this.nodeByZoneId, this.tracksByZoneId, this.pointsByZoneId, this.stations, this.aNodes, this.aerialway);
-                                                            }
-
-                                                        }
-
-                                                        var additionalCost = 0;
-                                                        if (this.usePiste) {
-                                                            if (endStation.e < startStation.e) {
-                                                                additionalCost = 999;
-                                                            }
-                                                        }
-
-                                                        var pathAerial = this.distanceFromStart.get(currentNodeId) + additionalCost;
-                                                        var dist = earthDistance(aerialNeighbor.po.coordinates, end);
-                                                        pathAerial += (this.aStartLambda * dist);
-
-                                                        if (!this.distanceFromStart.has(aerialNeighbor.i)) {
-                                                            this.distanceFromStart.set(aerialNeighbor.i, undefined);
-                                                        }
-
-
-                                                        if ((this.distanceFromStart.get(aerialNeighbor.i) == undefined) || (pathAerial < this.distanceFromStart.get(aerialNeighbor.i))) {
-                                                            this.distanceFromStart.set(aerialNeighbor.i, pathAerial);
-
-
-                                                            var previousNode = this.previousNodes.get(endStation.i);
-                                                            if (previousNode != undefined && previousNode != null) {
-                                                                var previousNodeId = previousNode.i;
-                                                                if ((aerialNeighbor.i != endStation.i) && (previousNodeId != aerialNeighbor.i)) {
-                                                                    this.previousNodes.set(aerialNeighbor.i, endStation);
-                                                                }
-                                                            } else {
-                                                                if (aerialNeighbor.i != endStation.i) {
-                                                                    this.previousNodes.set(aerialNeighbor.i, endStation);
-
-                                                                }
-                                                            }
-
-                                                            this.previousTracks.set(aerialNeighbor.i, aerialTrack);
-
-
-                                                            var previousNode = this.previousNodes.get(startStation.i);
-                                                            if (previousNode != undefined && previousNode != null) {
-                                                                var previousNodeId = previousNode.i;
-                                                                if ((endStation.i != startStation.i) && (previousNodeId != endStation.i)) {
-                                                                    this.previousNodes.set(endStation.i, startStation);
-                                                                }
-                                                            } else {
-                                                                if (endStation.i != startStation.i) {
-                                                                    this.previousNodes.set(endStation.i, startStation);
-                                                                }
-                                                            }
-
-                                                            this.previousTracks.set(endStation.i, aerialTrack);
-
-                                                            var previousNode = this.previousNodes.get(currentNodeId);
-                                                            if (previousNode != undefined && previousNode != null) {
-                                                                var previousNodeId = previousNode.i;
-                                                                if ((startStation.i != currentNode.i) && (previousNodeId != startStation.i)) {
-                                                                    this.previousNodes.set(startStation.i, currentNode)
-                                                                }
-                                                            } else {
-                                                                if (startStation.i != currentNode.i) {
-                                                                    this.previousNodes.set(startStation.i, currentNode)
-                                                                }
-                                                            }
-                                                            if (!this.previousTracks.has(startStation.i)) { //FIX su nodo di partenza funivia che prende traccia sbagliata e disegna una retta con il nodo precedente!
-                                                                this.previousTracks.set(startStation.i, aerialTrack);
-                                                            }
-                                                        }
-                                                    }
-                                                };
-                                            }
-                                        }
-
-                                    }
-
-                                } else {
-                                    console.log("ANode not found for station: " + stationList[0].i);
-                                }
-                            }
+                        });
+                        await newZoneIds.forEach(async (element: any) => {
+                            await this.addZoneToData(new PositionModelDto(toNumber(element[1]), toNumber(element[0])))
+                        });
+                        this.visitedNodes.set(currentNode.i, 1);
+                        var p2 = performance.now();
+                        if (newZoneIds.length != 0) {
+                            totalLoadNewZone += p2 - p1
                         }
                     }
                 }
-            }
 
 
-
-            //controllo se in endingNodes c'è il nodo finale, in quel caso esco
-            this.endingNodes.forEach(endingNode => {
-                if (endingNode.i == currentNodeId) {
-                    this.algorithmHasFinished = true;
+                for (const endingNode of this.endingNodes) {
+                    if (endingNode.i == currentNode.i) {
+                        console.log(`[1] totalFindStartEndZone took ${totalFindStartEndZone} milliseconds`)
+                        console.log(`[2] totalAddStartEndZone took ${totalAddStartEndZone} milliseconds`)
+                        console.log(`[3] totalGetClosestKey took ${totalGetClosestKey} milliseconds`)
+                        console.log(`[4] totalSetVisitedZones took ${totalSetVisitedZones} milliseconds`)
+                        console.log(`[5] totalfindStartEndNodes took ${totalfindStartEndNodes} milliseconds`)
+                        console.log(`[6] totalfindStartEndTrack took ${totalfindStartEndTrack} milliseconds`)
+                        console.log(`[7] totalInitDistance took ${totalInitDistance} milliseconds`)
+                        console.log(`[8] totalFindCurrentNode took ${totalFindCurrentNode} milliseconds`)
+                        console.log(`[9] totalFindNodeByZoneAndId took ${totalFindNodeByZoneAndId} milliseconds`)
+                        console.log(`[9] totalFindNeigbor took ${totalFindNeigbor} milliseconds`)
+                        console.log(`[11] totalFindTracks took ${totalFindTracks} milliseconds`)
+                        console.log(`[12] totalMinTrack took ${totalMinTrack} milliseconds`)
+                        console.log(`[13] totalSetDistance took ${totalSetDistance} milliseconds`)
+                        console.log(`[B] totalLoadNewZone took ${totalLoadNewZone} milliseconds`)
+                        this.algorithmFinish = true;
+                    }
                 }
-            });
-            if (this.algorithmHasFinished) {
-                break;
-            }
-        }
-        //var overallWhileEndTime = performance.now();
-        //console.log(`[A] While took ${overallWhileEndTime - overallWhileStartTime} milliseconds`)
-
-
-        //var responseStartTime = performance.now();
-        var nodePath = [];
-
-        if (!this.algorithmHasFinished) {
-            this.resetVariables();
-            return of(null);
-        }
-
-        //in previusnode non ho già i nodi ordinatii?
-        while (this.previousNodes.has(currentNodeId) && this.previousNodes.get(currentNodeId) != null) {
-            nodePath.unshift(currentNode);
-            var startNode = currentNode;
-            var endNode = this.previousNodes.get(currentNodeId);
-            var track = this.previousTracks.get(currentNodeId);
-            this.calculateResultPoints(startNode, endNode, track, this.pointsByZoneId, this.stations);
-            currentNode = endNode;
-            currentNodeId = currentNode.i;
-        }
-        nodePath.unshift(currentNode);
-
-
-        this.calculateStartEndPoints(this.startTrack[0], nodePath, this.startingPoint, "start");
-        this.calculateStartEndPoints(this.endTrack[0], nodePath, this.endingPoint, "end");
-
-        var resultPointList: any = this.result.reverse();
-        //remove double point
-        resultPointList = resultPointList.filter((item: any, index: any) => resultPointList.indexOf(item) === index);
-        // var responseEndTime = performance.now();
-        // console.log(`[A] Calculating response took ${responseEndTime - responseStartTime} milliseconds`)
-        // var overallEndTime = performance.now();
-        // console.log(`[A] Calculating path took ${overallEndTime - overallStartTime} milliseconds`)
-        return this.createResponse(resultPointList);
-    }
-
-    private isStationClosed(station: { p: { [x: string]: string; }; }, isStartStation: boolean) {
-
-        if (this.usePiste) {
-            return false
-        }
-
-        if (!!station.p && !!station.p["aerialway:summer:access"] && station.p["aerialway:summer:access"] != "no") {
-            if (isStartStation && station.p["aerialway:summer:access"] == "exit") {
-                return true
-            }
-            return false;
-        }
-        return true;
-    }
-
-    private getNewZoneIdToLoad(currentNode: { t: any; }, neighborId: { toString: () => any; }) {
-
-        var newZoneIds: any[] = [];
-        var connectedTracks = currentNode.t;
-        var trackIds = connectedTracks.get(neighborId.toString());
-        trackIds.forEach((trackId: any) => {
-            var track = this.algorithmRepository.findTrackById(trackId);
-            track.z.forEach((zoneId: any[]) => {
-                var notIncluded = !this.visitedZones.some(a => zoneId.every((v: any, i: string | number) => v === a[i]));
-                if (notIncluded) {
-                    newZoneIds.push(zoneId);
-                    this.visitedZones.push(zoneId);
+                if (this.algorithmFinish) {
+                    break;
                 }
-            });
-        });
+            }
 
-        return newZoneIds;
+            var nodePath = []
+            var baseGeoJson = DijkstraService.baseLineStringGeoJson;
+            var coordinates = [];
+            var lastNode = currentNode;
+            while (this.previousNodes.has(currentNode.i) && this.previousNodes.get(currentNode.i) != null) {
+                nodePath.unshift(currentNode);
+                var startNode = currentNode;
+                var endNode = this.previousNodes.get(currentNode.i);
+                var coord = this.calculateResultCoordinates(startNode, endNode);
+                coordinates.push(...coord);
+                currentNode = endNode;
+            }
+
+            var firstNode = currentNode;
+
+            if (endTracks.length == 1) {
+                //E' il caso in cui il punto finale si trova in mezzo ad una track, inserisco i punti mancanti;
+                var coor = this.connectPointToResultCoordinates(endingPoint, lastNode, endTracks[0], "end");
+                coordinates.unshift(...coor);
+            }
+
+            if (startTracks.length == 1) {
+                //E' il caso in cui il punto finale si trova in mezzo ad una track, inserisco i punti mancanti;
+                var coordi = this.connectPointToResultCoordinates(startingPoint, firstNode, startTracks[0], "start");
+                coordinates.push(...coordi);
+            }
+
+            baseGeoJson.features[0].geometry.coordinates = coordinates;
+            var ovrallEnd = performance.now();
+            console.log(`[A] Calculating path took ${ovrallEnd - ovrallStart} milliseconds`)
+            return baseGeoJson;
+        } catch (error) {
+            console.error("An error occurred in method dijkstra [AlgorithmService]: " + error);
+        }
     }
 
-    private resetVariables() {
-        this.algorithmRepository.resetRepository();
-        this.algorithmHasFinished = false;
+    connectPointToResultCoordinates(point: any, node: any, track: any, type: string) {
+        var pointInTrack = track.t;
+        var coordinatesInTrack = track.c;
+        var pointIndex = pointInTrack.indexOf(point.i);
+        var nodeIndex = pointInTrack.indexOf(node.i)
+        var res;
+        if (nodeIndex != -1 && pointIndex != -1) {
+            res = coordinatesInTrack.slice(pointIndex, nodeIndex + 1);
+            if (type == "start") {
+                if (pointIndex < nodeIndex) {
+                    res = res.reverse();
+                }
+            } else {
+                if (pointIndex > nodeIndex) {
+                    res = res.reverse();
+                }
+            }
+
+            return res;
+        }
+    }
+
+    calculateResultCoordinates(startNode: any, endNode: any) {
+        var track = this.previousTracks.get(startNode.i);
+        var pointInTrack = track.t;
+        var coordinatesInTrack = track.c;
+        var startNodeIndex = pointInTrack.indexOf(startNode.i);
+        var endNodeIndex = pointInTrack.indexOf(endNode.i)
+        var res;
+
+        if (startNodeIndex != -1 && endNodeIndex != -1) {
+            if (startNodeIndex < endNodeIndex) {
+                res = coordinatesInTrack.slice(startNodeIndex, endNodeIndex + 1);
+            } else {
+                res = coordinatesInTrack.slice(endNodeIndex, startNodeIndex + 1);
+                res = res.reverse();
+            }
+
+            return res;
+        }
+    }
+
+    findTracks(currentNode: any, neighbor: any) {
+        //Find the neighbor with the minimum cost
+        var tracksList = [];
+        var connectedTracks: any = new Map(Object.entries(currentNode.t));
+        var tracks = connectedTracks.get(neighbor.i.toString());
+
+
+        if (tracks.length == 1) {
+            //THERE IS ONLY ONE TRACK
+            tracksList.push(this.algorithmRepository.findTrackById(tracks[0]));
+        } else {
+            //FIND TRACK WITH MINIMUM COST
+            tracks.forEach(async (trackId: any) => {
+                tracksList.push(this.algorithmRepository.findTrackById(trackId));
+            });
+        }
+
+        return tracksList;
+    }
+
+    resetVariables() {
+        this.algorithmRepository.resetData();
         this.startingNodes = []; // array with nearest nodes to startingPoint (max 2)
         this.endingNodes = []; // array with nearest nodes to endingPoint (max 2)
         this.previousNodes = new Map<any, any>(); //Map of previous optimal node visited, it's used at the end to retrive the path
         this.visitedNodes = new Map<any, any>();; //Map of previous node visited;
         this.distanceFromStart = new Map<any, any>(); // Map of nodes with cost
         this.previousTracks = new Map<any, any>(); // Map of tracks visited
-        this.result = []; //result of pathfinding
-        this.overallAscent = 0;
-        this.overallDescent = 0;
-        this.time = [];
-        this.endingPoint = null;
-        this.startingPoint = null;
-        this.endTrack = null;
-        this.visitedZones = [];
-        this.usedStationStart = [];
-        this.usedStationEnd = [];
-        this.isRunning = false;
-        this.usePendenza = true;
-    }
-    private calculateStartEndPoints(track: { t: string | any[]; }, nodePath: string | any[], point: { i: any; }, type: string) {
-
-        var nodePathIndex;
-        if (type == "start") {
-            nodePathIndex = 0;
-        } else {
-            nodePathIndex = nodePath.length - 1;
-        }
-
-        var index = track.t.indexOf(point.i);
-        var nodeIndex = track.t.indexOf(nodePath[nodePathIndex].i);
-
-        var res: any;
-        if (index < nodeIndex) {
-            res = track.t.slice(index, nodeIndex + 1);
-        } else {
-            res = track.t.slice(nodeIndex, index + 1);
-        }
-
-
-        if (res[0] != nodePath[nodePathIndex].i) {
-            res = res.reverse();
-        }
-        res.forEach((coord: any) => {
-            if (type == "start") {
-                this.result.push(this.algorithmRepository.findPointById(coord, this.useAerialWayElements));
-            } else {
-                this.result.unshift(this.algorithmRepository.findPointById(coord, this.useAerialWayElements));
-            }
-
-        });
+        this.nodeCountLength = 0;
+        this.arraySorted = []
+        this.algorithmFinish = false
     }
 
-    private calculateResultPoints(startNode: { po: undefined; i: any; isAerialway: boolean; }, endNode: { po: undefined; i: any; isAerialway: boolean; }, track: { t: any; p: any; }, pointList: any, stationList: any) {
+    async addZoneToData(zoneId: PositionModelDto) {
 
-        var points = track.t;
-        if (this.useAerialWayElements && points == undefined) {
-            //Caso di unire nodo-stazione | stazione- stazione | stazione-nodo
-            points = track.p;
-            var startNodeIndex = startNode.po == undefined ? points.indexOf(startNode.i) : points.indexOf(startNode.i)
-            var endNodeIndex = endNode.po == undefined ? points.indexOf(endNode.i) : points.indexOf(endNode.i)
+        var isInZoneToBe = false;
 
-            if (startNodeIndex == -1 && endNodeIndex != -1) {
-                var resultPoint = this.algorithmRepository.findPointById(startNode.i, this.useAerialWayElements);
-                this.result.push(resultPoint);
-                this.result.push(endNode);
-            } else if (startNodeIndex != -1 && endNodeIndex == -1) {
-                // if (endNode.po == undefined) {
-                //     debugger;
-                // }
-                this.result.push(startNode);
-                var resultPoint = this.algorithmRepository.findPointById(endNode.i, this.useAerialWayElements);
-                this.result.push(resultPoint);
-            } else {
-                startNode.isAerialway = true;
-                endNode.isAerialway = true;
-                this.result.push(startNode);
-                this.result.push(endNode);
+        if (this.zoneToBe.length == 0) {
+            isInZoneToBe = true;
+        } else {
+            for (const zone of this.zoneToBe) {
+                if (zone.equals(zoneId)) {
+                    isInZoneToBe = true;
+                }
             }
+        }
+
+        if (isInZoneToBe) {
+            console.log("LOADING [" + zoneId.lat + "," + zoneId.lng + "]")
+            var nodeToLoad = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Nodes, zoneId)
+            var pointsToLoad = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Points, zoneId)
+            var trackToLoad = await this.algorithmRepository.findAllByZoneId(EntityTypeEnum.Tracks, zoneId)
+
+            this.nodeCountLength += nodeToLoad.length;
+            nodeToLoad.forEach((node: any) => {
+                if (this.previousNodes.get(node.i) == undefined) {
+                    this.previousNodes.set(node.i, null);
+                }
+                if (this.visitedNodes.get(node.i) != 1) {
+                    this.visitedNodes.set(node.i, 0);
+                }
+            });
+            await this.algorithmRepository.updateData({ zoneId: zoneId, list: nodeToLoad }, { zoneId: zoneId, list: pointsToLoad }, { zoneId: zoneId, list: trackToLoad }, null, null, null);
+        }
+    }
+
+    findStartNodes(point: any, zoneId: PositionModelDto) {
+
+        //TODO PSEUDOCODICE
+        // SIA IN POINT CHE IN TRACK.T CI SARà LINFORMAZIONE SE IL PUNTO E' UN NODO O MENO...QUINDI:
+        // IF POINT IS NODE (DIRECTLY) -> ADD TO STARTNODE, ELSE CHECK IN TRACK.T THE PREVIOUS AND NEXT NODE, STARTING FROM POINT INDEX IN TRACK.T
+        // OPPURE                 //TODO Capire se fare direttamente una closestKey sui nodi (Attuale implementazione)
+        var startNodes = []
+        if (this.isPiste) {
 
         } else {
-            //Caso normale nodo-nodo
-            var startNodeIndex = points.indexOf(startNode.i);
-            var endNodeIndex = points.indexOf(endNode.i);
-            if (startNodeIndex != -1 && endNodeIndex != -1) {
-
-                var res;
-                if (startNodeIndex < endNodeIndex) {
-                    res = points.slice(startNodeIndex, endNodeIndex + 1);
-                } else {
-                    res = points.slice(endNodeIndex, startNodeIndex + 1);
+            var trackList = this.algorithmRepository.filterTracksByPoint(point, zoneId);
+            if (trackList.length > 1) {
+                //POINT E' UN NODO
+                startNodes.push(this.algorithmRepository.findNodeById(point.i));
+            } else {
+                //POINT SI TROVA IN MEZZO A DEI NODI, PRENDO IL PRIMO E L'ULTIMO PUNTO DELLA TRACK
+                var node = this.algorithmRepository.findNodeById(trackList[0].t[0])
+                var node2 = this.algorithmRepository.findNodeById(trackList[0].t[trackList[0].t.length - 1])
+                if (node != undefined) {
+                    startNodes.push(node)
                 }
-
-                if (res[0] != startNode.i) {
-                    res = res.reverse();
+                if (node2 != undefined) {
+                    startNodes.push(node2);
                 }
-                res.forEach((coord: any) => {
-                    this.result.push(this.algorithmRepository.findPointById(coord, this.useAerialWayElements));
-                });
             }
         }
 
+        return startNodes;
+
 
     }
 
-    private getClosestKey(coordinates: any[]) {
-        //TODO: migliorare con logica a zone
-        var mindist: number | undefined = undefined;
-        var closestNode = undefined;
+    findEndNodes(point: any, zoneId: PositionModelDto) {
 
-        //TODO prendere points dal DB 
+        //TODO PSEUDOCODICE
+        // SIA IN POINT CHE IN TRACK.T CI SARà LINFORMAZIONE SE IL PUNTO E' UN NODO O MENO...QUINDI:
+        // IF POINT IS NODE (DIRECTLY) -> ADD TO STARTNODE, ELSE CHECK IN TRACK.T THE PREVIOUS AND NEXT NODE, STARTING FROM POINT INDEX IN TRACK.T
+        // OPPURE                 //TODO Capire se fare direttamente una closestKey sui nodi (Attuale implementazione)
+        var endNodes = []
+        if (this.isPiste) {
 
-        this.pointsByZoneId.forEach((point: { c: any[]; }) => {
-            var distance = earthDistance(point.c, coordinates);
-            if (mindist == undefined || distance < mindist) {
-                closestNode = point;
-                mindist = distance;
-            }
-        });
-        return closestNode;
-    }
-
-    private checkProhibitionsAndReturnErrorCode(startPoint: any, endPoint: any) {
-
-        //Gestire più tracce
-        //Capire come discriminare quale delle due tracce usare se ce ne sono multiple
-        this.startTrack = this.algorithmRepository.filterTracksByPoint(startPoint);
-        //if (!!endPoint) {
-        this.endTrack = this.algorithmRepository.filterTracksByPoint(endPoint);
-        //}
-
-
-        //fare ciclo per più tracce
-        // Se tutte le tracce hanno foot no errore!
-
-        var prohibitionsArray = [];
-
-        for (const track of this.startTrack) {
-            prohibitionsArray.push(existProhibitions(this.options, track));
-        }
-
-        if (prohibitionsArray.every(Boolean)) {
-            //PROIBITHIONS ERROR
-        }
-
-        var prohibitionsArray = [];
-
-        for (const track of this.endTrack) {
-            prohibitionsArray.push(existProhibitions(this.options, track));
-        }
-
-        if (prohibitionsArray.every(Boolean)) {
-            //PROIBITHIONS ERROR
-        }
-
-
-        return null;
-    }
-
-    private findStartNodes(array: any[], point: { i: any; e: number; c: any[]; }, track: { t: string | any[]; i: any; }, distanceFromStart: Map<any, any>) {
-        // finding starting and ending nodes
-        if (this.algorithmRepository.isNodeFromPoint(point)) {
-            var node = this.algorithmRepository.findNodeById(point.i, this.useAerialWayElements);
-            array.push(node);
-            distanceFromStart.set(point.i, 0); //set the cost to 0 if the point is a node
         } else {
-            var indiceStarting = track.t.indexOf(point.i);
-
-            var i = indiceStarting + 1;
-            while (!this.algorithmRepository.isNodeFromPointId(track.t[i], this.usePiste) && i < track.t.length - 1) {
-                //cumulare distanza da passare a getCost
-                i += 1;
-            }
-            if (i <= track.t.length - 1) {
-                var nextNodeId = track.t[i];
-                var nextNode = this.algorithmRepository.findNodeById(nextNodeId, this.useAerialWayElements);
-
-                if (!!nextNode) {
-                    if (this.usePiste) {
-                        if (nextNode.po.elevation <= point.e || Math.abs(nextNode.po.elevation - point.e) < 5) {
-                            array.push(nextNode);
-                            //TODO subottima, meglio fare sum di distanze da punto a punto
-                            //Il calcolo della distancza fino al nodo va fatto solamente in questa funzione, per gli altri costi si fa riferimento a node.connected_distance[nextNodeId]
-                            //Calcaolare la perndenza da point a NextNode e passsarla alla getCost
-                            var distance = earthDistance(point.c, nextNode.po.coordinates);
-                            var pendenza = Math.abs(point.e - nextNode.po.elevation) / (distance * 1000);
-                            distanceFromStart.set(nextNodeId, this.metricsService.getCost(track, this.options, distance, pendenza));
-                        }
-                    } else {
-                        array.push(nextNode);
-                        //TODO subottima, meglio fare sum di distanze da punto a punto
-                        //Il calcolo della distancza fino al nodo va fatto solamente in questa funzione, per gli altri costi si fa riferimento a node.connected_distance[nextNodeId]
-                        //Calcaolare la perndenza da point a NextNode e passsarla alla getCost
-                        var distance = earthDistance(point.c, nextNode.po.coordinates);
-                        var pendenza = Math.abs(point.e - nextNode.po.elevation) / (distance * 1000);
-                        distanceFromStart.set(nextNodeId, this.metricsService.getCost(track, this.options, distance, pendenza));
-                    }
-                }
-            }
-
-            var j = indiceStarting - 1;
-            while (!this.algorithmRepository.isNodeFromPointId(track.t[j], this.usePiste) && j >= 0) {
-                j -= 1;
-            }
-            if (j >= 0) {
-                var previousNodeId = track.t[j];
-                var previousNode = this.algorithmRepository.findNodeById(previousNodeId, this.useAerialWayElements);
-                if (!!previousNode) {
-                    if (this.usePiste) {
-                        if (previousNode.po.elevation <= point.e || Math.abs(previousNode.po.elevation - point.e) < 5) {
-                            array.push(previousNode);
-                            var distance = earthDistance(point.c, previousNode.po.coordinates)
-                            var pendenza = Math.abs(point.e - previousNode.po.elevation) / (distance * 1000);
-                            distanceFromStart.set(previousNodeId, this.metricsService.getCost(track, this.options, distance, pendenza));
-
-                        }
-                    } else {
-                        array.push(previousNode);
-                        var distance = earthDistance(point.c, previousNode.po.coordinates)
-                        var pendenza = Math.abs(point.e - previousNode.po.elevation) / (distance * 1000);
-                        distanceFromStart.set(previousNodeId, this.metricsService.getCost(track, this.options, distance, pendenza));
-                    }
-                }
-            }
-        }
-
-
-        if (this.usePiste) {
-            if (this.startingNodes.length == 0) {
-                var aNodes = this.algorithmRepository.findANodeFromTrack(track.i);
-                //var stations = this.algorithmRepository.findStationsByANode(aNode);
-                var aNodesSoreted = aNodes.sort((a: { po: { elevation: number; }; }, b: { po: { elevation: number; }; }) => a.po.elevation - b.po.elevation);
-                var aNode = aNodesSoreted[0];
-                array.push(aNode);
-                if (!!distanceFromStart) {
-                    var distance = earthDistance(point.c, aNode.po.coordinates);
-                    var pendenza = Math.abs(point.e - aNode.po.elevation) / (distance * 1000);
-                    distanceFromStart.set(aNode.i, distance)
-                }
-            }
-        }
-
-    }
-
-    private findEndNodes(array: any[], point: { i: any; e: number; c: any[]; }, track: { t: string | any[]; i: any; }) {
-        if (this.algorithmRepository.isNodeFromPoint(point)) {
-            var node = this.algorithmRepository.findNodeById(point.i, this.useAerialWayElements);
-            array.push(node);
-        } else {
-            var indiceStarting = track.t.indexOf(point.i);
-
-            var i = indiceStarting + 1;
-            while (!this.algorithmRepository.isNodeFromPointId(track.t[i], this.usePiste) && i < track.t.length - 1) {
-                //cumulare distanza da passare a getCost
-                i += 1;
-            }
-            if (i <= track.t.length - 1) {
-                var nextNodeId = track.t[i];
-                var nextNode = this.algorithmRepository.findNodeById(nextNodeId, this.useAerialWayElements);
-
-                if (!!nextNode) {
-                    if (this.usePiste) {
-                        if (nextNode.po.elevation >= point.e || Math.abs(nextNode.po.elevation - point.e) < 5) {
-                            array.push(nextNode);
-                        }
-                    } else {
-                        array.push(nextNode);
-                    }
-                }
-            }
-
-            var j = indiceStarting - 1;
-            while (!this.algorithmRepository.isNodeFromPointId(track.t[j], this.usePiste) && j >= 0) {
-                j -= 1;
-            }
-            if (j >= 0) {
-                var previousNodeId = track.t[j];
-                var previousNode = this.algorithmRepository.findNodeById(previousNodeId, this.useAerialWayElements);
-                if (!!previousNode) {
-                    if (this.usePiste) {
-                        if (previousNode.po.elevation >= point.e || Math.abs(previousNode.po.elevation - point.e) < 5) {
-                            array.push(previousNode);
-                        }
-                    } else {
-                        array.push(previousNode);
-                    }
-                }
-            }
-        }
-
-        if (this.usePiste) {
-            if (this.endingNodes.length == 0) {
-                var aNodes = this.algorithmRepository.findANodeFromTrack(track.i);
-                var aNodesSoreted = aNodes.sort((a: { po: { elevation: number; }; }, b: { po: { elevation: number; }; }) => a.po.elevation - b.po.elevation);
-                var aNode = aNodesSoreted[aNodesSoreted.length - 1];
-                //var stations = this.algorithmRepository.findStationsByANode(aNode);
-                //Predere l'anode più vicino al punto di arrivo con elevazione non superiore a 10
-
-                var minIdx = 0;
-                aNodes.forEach((aNode: { po: { coordinates: any[]; elevation: number; }; }, i: number) => {
-                    if ((earthDistance(aNode.po.coordinates, point.c) < earthDistance(aNodes[minIdx].po.coordinates, point.c)) && (Math.abs(aNode.po.elevation - point.e) < 10)) {
-                        minIdx = i;
-                    }
-                })
-
-                array.push(aNodes[minIdx]);
+            var trackList = this.algorithmRepository.filterTracksByPoint(point, zoneId);
+            if (trackList.length > 1) {
+                //POINT E' UN NODO
+                endNodes.push(this.algorithmRepository.findNodeById(point.i));
             } else {
-                //Controllo se ci sono degli Anode più vicini all'arrivo, se esistono li aggiungo come punto di arrivo
-                var aNodes = this.algorithmRepository.findANodeFromTrack(track.i);
-                var distanceArray: number[] = [];
-                aNodes.forEach((aNode: { po: { coordinates: any[]; }; }) => {
-                    distanceArray.push(earthDistance(aNode.po.coordinates, point.c));
-                });
-                var minIdx = Math.min(...distanceArray);
-                var aNode = aNodes[distanceArray.indexOf(minIdx)];
-                var resultArray: any[] = [];
-                array.forEach((endingNode: { po: { coordinates: any[]; }; }, i: number) => {
-                    if (earthDistance(endingNode.po.coordinates, point.c) > distanceArray[distanceArray.indexOf(minIdx)] && (Math.abs(aNode.po.elevation - point.e) < 10)) {
-                        resultArray[i] = true;
-                    } else {
-                        resultArray[i] = false;
-                    }
-                });
-
-                if (resultArray.every(element => element === true)) {
-                    this.endingNodes = [];
-                    this.endingNodes.push(aNode)
+                //POINT SI TROVA IN MEZZO A DEI NODI, PRENDO IL PRIMO E L'ULTIMO PUNTO DELLA TRACK
+                var node = this.algorithmRepository.findNodeById(trackList[0].t[0])
+                var node2 = this.algorithmRepository.findNodeById(trackList[0].t[trackList[0].t.length - 1])
+                if (node != undefined) {
+                    endNodes.push(node)
                 }
-            }
-        }
-    }
-
-    private findCurrentNodeId() {
-
-        // Set current_node to the unvisited node with shortest distance
-        // calculated so far.
-        var candidates = [];
-
-        //TODO Dividere in due liste distanceFromStart quelli già con costo e in un altra lista quelli non visitati?
-        for (let key of this.distanceFromStart.keys()) {
-            if (this.visitedNodes.has(key)) {
-                if (this.visitedNodes.get(key) == 0) {
-                    candidates.push(key);
-                }
-            } else {
-                console.log("Key not found in visitedNode");
-                this.visitedNodes.set(key, 1);
-                this.distanceFromStart.set(key, undefined); // set the cost to infinity
-            }
-        }
-
-        var currentNodeId = null;
-        var minCost: number | null = null;
-        candidates.forEach(candidateId => {
-            if (minCost == null) {
-                minCost = this.distanceFromStart.get(candidateId);
-                currentNodeId = candidateId;
-            } else if (this.distanceFromStart.get(candidateId) < minCost) {
-                minCost = this.distanceFromStart.get(candidateId);
-                currentNodeId = candidateId;
-            }
-        });
-
-        if (currentNodeId == null) {
-            console.log("No candidates for chosen path!");
-            return [];
-        } else {
-            return currentNodeId;
-        }
-    }
-
-    private findTrackWithMinimumCost(currentNode: { d: any; t: any; po: { coordinates: any[]; elevation: number; }; }, nextNodeId: { toString: () => any; }) {
-        //Find the neighbor with the minimum cost
-        var nextNode = this.algorithmRepository.findNodeById(nextNodeId, this.useAerialWayElements);
-        var idxShorter = 0;
-        var tmpMinCost: number | null = null;
-
-        var connectedDistance = currentNode.d;
-        var connectedTracks = currentNode.t;
-        var arrayDistance = connectedDistance.get(nextNodeId.toString());
-        arrayDistance.forEach((element: string, i: number) => {
-            var trackId = connectedTracks.get(nextNodeId.toString())[i];
-            var track = this.algorithmRepository.findTrackById(trackId);
-
-            if (track != undefined) { // IF aggiunto su SERVER ONLINE nel caso in cui non abbia i dati su DB
-                var distance = earthDistance(currentNode.po.coordinates, nextNode.po.coordinates);
-                var pendenza = Math.abs(currentNode.po.elevation - nextNode.po.elevation) / (parseInt(element) * 1000);
-                var cost = this.metricsService.getCost(track, this.options, distance, pendenza);
-                if (tmpMinCost == null) {
-                    idxShorter = i;
-                    this.actualCost = cost;
-                }
-                else if (cost < tmpMinCost) {
-                    idxShorter = i;
-                    this.actualCost = cost;
-                }
-            } else {
-                this.actualCost = 9999999999999999999;
-            }
-
-        });
-
-        return connectedTracks.get(nextNodeId.toString())[idxShorter];
-    }
-
-    //CREATE RESPONSE METHODS 
-    private createReturnPoint(point: { po: { coordinates: any; tracks: any[]; elevation: any; }; c: any; t: any[]; a: string | any[]; i: any; e: any; }) {
-        //fare merge di tutte le proprietà delle track
-        var retPoint = new ReturnPointModel();
-        retPoint.coordinates = point.po != undefined ? point.po.coordinates : point.c;
-        var track = this.algorithmRepository.findTrackById(point.po != undefined ? point.po.tracks[0] : point.t[0]);
-        if (track == undefined) {
-            //Airial case
-
-            if (point.a.length == 0) {
-                //Caso in cui l'id della staazione combacia con l'id dell'ultimo nodo del path.
-                point = this.algorithmRepository.findStationsById(point.i);
-            }
-
-            if (point == undefined) {
-                debugger;
-            }
-            track = this.algorithmRepository.findAerialwayByStation(point);
-
-            //Se ci sono due track capire come unire i params
-            track = track[0];
-
-            retPoint.params = track.pr;
-            retPoint.elevation = point.e;
-            retPoint.isNode = true
-            retPoint.isAnode = false;
-            retPoint.isAerialway = true;
-            retPoint.id = point.i;
-            return retPoint;
-        }
-
-        retPoint.params = track.p;
-        retPoint.elevation = point.po == undefined ? point.e : point.po.elevation;
-        retPoint.isAerialway = false;
-        retPoint.id = point.i;
-        retPoint.isNode = this.algorithmRepository.isNodeFromPoint(point);
-        if (this.useAerialWayElements) {
-            retPoint.isAnode = this.algorithmRepository.isAnodeFromId(point.i);;
-        } else {
-            retPoint.isAnode = false;
-        }
-        return retPoint;
-    }
-
-
-    private createResponse(resultPointList: never[]) {
-
-        var featuresArray = this.createFeatures(resultPointList);
-        featuresArray.push({ type: "Feature", geometry: null, properties: this.createProperties(resultPointList) });
-        var resultObject = new GeoJson(featuresArray, "FeatureCollection");
-        this.resetVariables();
-        console.timeEnd('algo')
-        return resultObject;
-    }
-
-    private createFeatures(coordinateList: { isAerialway: any; }[]) {
-
-        var featuresArray: { type: string; geometry: any; properties: { color: any; } | { color: any; }; }[] = [];
-        var beforeIsAerialway = coordinateList[0].isAerialway ? true : false;
-        var pointList = [];
-        for (const point of coordinateList) {
-            if (point.isAerialway == undefined) {
-                point.isAerialway = false;
-            }
-            if (point.isAerialway == beforeIsAerialway) {
-                pointList.push(point);
-            } else {
-                beforeIsAerialway = point.isAerialway;
-                pointList.push(point);
-                var tracksToShow = this.generateTracksToShow(pointList);
-                tracksToShow.forEach(track => {
-                    featuresArray.push({ type: "Feature", geometry: this.createLineString(track.points), properties: { color: track.color } })
-
-                });
-                pointList = [];
-                pointList.push(point);
-            }
-        }
-        //Aggiungo prima feature
-
-        var tracksToShow = this.generateTracksToShow(pointList);
-        tracksToShow.forEach(track => {
-            featuresArray.push({ type: "Feature", geometry: this.createLineString(track.points), properties: { color: track.color } })
-
-        });
-        return featuresArray;
-    }
-
-    generateTracksToShow(pointList: any[]): any[] {
-        var result: any[] = [];
-
-        pointList.forEach((point, i) => {
-            var nextPoint = null;
-            if (i < pointList.length) {
-                nextPoint = pointList[i + 1]
-            }
-            var track = this.getTrackByPoints(point, nextPoint);
-            var color;
-            if (track == undefined) {
-                // Caso in cui devo collegare PNode ad una stazione staccata dalla pista.
-                color = "#5473E8"
-            } else {
-                color = colorByTrack(track, point.isAerialway);
-            }
-
-            if (result.length == 0) {
-                result.push({
-                    points: [point],
-                    color: color
-                })
-            } else if (result[result.length - 1].color != color) {
-                result[result.length - 1].points.push(point);
-                result.push({
-                    points: [point],
-                    color: color
-                })
-            } else {
-                result[result.length - 1].points.push(point);
-            }
-        });
-        return result;
-    }
-
-    private getTrackByPoint(point: any) {
-        return this.algorithmRepository.findTrackById(point.po != undefined ? point.po.tracks[0] : point.t[0]);
-    }
-
-    private getTrackByPoints(point: any, nextPoint: any) {
-        var tracks;
-        if (point.isAerialway) {
-            if (point.a.length == 0) {
-                point = this.algorithmRepository.findStationsById(point.i);
-            }
-            tracks = this.algorithmRepository.findAerialwayByStation(point)
-        } else {
-            tracks = this.algorithmRepository.findTracksByIds(point.t);
-        }
-
-        if (!!tracks && !!nextPoint && !!nextPoint.i && (point.isAerialway == nextPoint.isAerialway))
-            if (point.isAerialway) {
-                return tracks.find((x: { p: string | any[]; }) => x.p.includes(nextPoint.i));
-            } else {
-                return tracks.find((x: { t: string | any[]; }) => x.t.includes(nextPoint.i))
-            }
-        else
-            return tracks[0];
-    }
-
-    private createLineString(resultPointList: any[]) {
-        var coordinates: any[] = [];
-
-        resultPointList.forEach((point: { po: { coordinates: any; } | undefined; c: any; }) => {
-            coordinates.push(point.po == undefined ? point.c : point.po.coordinates);
-        });
-        return new Geometry("LineString", coordinates);
-    }
-
-
-    private createProperties(resultPointList: any[]): any {
-        var properties = new AlgorithmPropertiesModel();
-
-        var distance: number[] = [];
-        var elevation: any[] = [];
-        var points: any[] = [];
-
-        resultPointList.forEach((point: any, i: number) => {
-
-            points.push(this.createReturnPoint(point));
-            //Distance Array
-            if (i > 0) {
-                var prevPoint = resultPointList[i - 1];
-                var prevCoord = prevPoint.po == undefined ? prevPoint.c : prevPoint.po.coordinates;
-                var pointCoord = point.po == undefined ? point.c : point.po.coordinates;
-                var eDistance = earthDistance(prevCoord, pointCoord);
-                distance.push(distance[distance.length - 1] + eDistance);
-
-                //time bike - hike - aerialway
-                var retPoint = points.find(x => x.id == point.i);
-                var prevElev = prevPoint.po == undefined ? prevPoint.e : prevPoint.po.elevation;
-                var pointElev = point.po == undefined ? point.e : point.po.elevation;
-                this.calculateTimes(eDistance, prevElev, pointElev, retPoint, this.usePiste);
-
-            } else {
-                distance.push(0);
-                this.time.push(0);
-            }
-
-            //elevation
-            if ((point.po == undefined ? point.e : point.po.elevation) == -1) {
-                if (i != 0) {
-                    var elem = resultPointList[i - 1];
-                    var elev = elem.po == undefined ? elem.e : elem.po.elevation;
-                    elevation.push(elev);
-                } else {
-                    var elem = resultPointList[i + 1];
-                    var elev = elem.po == undefined ? elem.e : elem.po.elevation;
-                    elevation.push(elev);
-                }
-            } else {
-                elevation.push(point.po == undefined ? point.e : point.po.elevation);
-            }
-
-
-        });
-
-        properties.distance = distance;
-        properties.elevation = elevation;
-        //overallAscent - overallDescent
-        this.gain(elevation);
-        properties.overallAscent = this.overallAscent;
-        properties.overallDescent = this.overallDescent;
-        properties.time = this.time;
-        properties.points = points;
-        return properties;
-    }
-
-    private gain(elevationList: any) {
-        //pesare di centrare la media sul punto, quindi 5 in avanti e 5 indietro. 
-        this.overallAscent = 0;
-        this.overallDescent = 0;
-
-        var newElev = [elevationList[0]];
-        var tmpElev: any[] = [];
-        elevationList.forEach((element: any, i: number) => {
-            tmpElev.push(element);
-            if (i % 10 == 0 && i != 0) {
-                var mean = this.calculateEffectiveGain(newElev, tmpElev);
-                newElev.push(mean);
-                tmpElev = [];
-            }
-        });
-
-        if (tmpElev.length > 0) {
-            this.calculateEffectiveGain(newElev, tmpElev);
-
-        }
-    }
-
-    private calculateEffectiveGain(newElev: string | any[], tmpElev: any[]) {
-        var elevationValues = 0;
-        tmpElev.forEach((tmpElem: number) => {
-            elevationValues += tmpElem;
-        });
-        var mean = elevationValues / tmpElev.length;
-        var segment = mean - newElev[newElev.length - 1];
-        if (segment > 0) {
-            this.overallAscent += segment;
-        } else {
-            this.overallDescent += -segment;
-        }
-        return mean;
-    }
-
-    private calculateTimes(eDistance: number, prevElev: number, currentElev: number, retPoint: { isAerialway: any; params: { [x: string]: any; }; }, usePiste: any) {
-        var isAerialway = retPoint.isAerialway;
-        var disl;
-        var pend;
-        var dist = eDistance * 1000;
-        if (dist == 0) {
-            disl = 0;
-            pend = 0;
-        } else {
-            disl = currentElev - prevElev;
-            pend = disl / dist;
-        }
-
-        var tmpTime;
-        if (usePiste) {
-            tmpTime = dist / 20;
-        } else {
-            if (pend > 0.1 && pend < 0.2) {
-                tmpTime = (dist + disl / 300) / 2;
-                //tmpTime = (dist + disl / 300) / 6; //BIKE
-            } else if (pend > 0.2) {
-                tmpTime = dist / 1.25;
-                //tmpTime = dist / 10; //BIKE
-            } else if (pend < -0.1) {
-                tmpTime = dist / 5;
-                //tmpTime = dist / 10; //BIKE
-            } else {
-                tmpTime = dist / 3.5;
-                //tmpTime = dist / 15; //BIKE
-            }
-        }
-
-        if (isAerialway) {
-            tmpTime = dist / 7.5;
-            if (usePiste) {
-                var aerialwayType = retPoint.params["aerialway"];
-                if (aerialwayType == "gondola") {
-                    tmpTime = dist / 18
-                } else {
-                    tmpTime = dist / 12
+                if (node2 != undefined) {
+                    endNodes.push(node2);
                 }
             }
         }
 
-
-        if (this.time.length > 0) {
-            this.time.push(this.time[this.time.length - 1] + (tmpTime / 1000));
-        }
-
-        // if (this.timeBike.length > 0) {
-        //     this.timeBike.push(this.timeBike[this.timeBike.length - 1] + (tmpTimeBike / 1000));
-        // }
-
-        // if (this.timeAerial.length > 0) {
-        //     this.timeAerial.push(this.timeAerial[this.timeAerial.length - 1] + (tmpTimeAerial / 1000));
-        // }
+        return endNodes;
 
     }
+
+    findZoneRectangle(startZone: PositionModelDto, endZone: PositionModelDto) {
+
+        var zoneToBe = []
+        var minLat: any = min([startZone.lat, endZone.lat]);
+        var maxLat: any = max([startZone.lat, endZone.lat]);
+
+        var minLng: any = min([startZone.lng, endZone.lng]);
+        var maxLng: any = max([startZone.lng, endZone.lng]);
+
+
+        for (var a: any = minLat; a < maxLat + 0.025; a += 0.05) {
+            for (var b: any = minLng; b < maxLng + 0.025; b += 0.05) {
+                var stringA = a.toFixed(2);
+                var stringB = b.toFixed(2);
+                zoneToBe.push(new PositionModelDto(parseFloat(stringA), parseFloat(stringB)))
+            }
+
+        }
+        return zoneToBe;
+
+    }
+
+    binarySearch(ar: any, el: any, compare_fn: any) {
+        if (el.cost < ar[0].cost)
+            return 0;
+        if (el.cost > ar[ar.length - 1].cost)
+            return ar.length;
+        var m = 0;
+        var n = ar.length - 1;
+        while (m <= n) {
+            var k = (n + m) >> 1;
+            var cmp = compare_fn(el, ar[k]);
+            if (cmp > 0) {
+                m = k + 1;
+            } else if (cmp < 0) {
+                n = k - 1;
+            } else {
+                return k;
+            }
+        }
+        return -m - 1;
+    }
+
+    comp(a: any, b: any) {
+        return a['cost'] > b['cost']
+    }
+
+    public static baseLineStringGeoJson: any = {
+        "type": "FeatureCollection",
+        "features": [
+          {
+            "type": "Feature",
+            "properties": {},
+            "geometry": {
+              "coordinates": [
+                // [
+                //   10.767515512250554,
+                //   46.16120066367279
+                // ],
+                // [
+                //   10.87166595930924,
+                //   46.16103012461676
+                // ]
+              ],
+              "type": "LineString"
+            }
+          }
+        ]
+      }
 }
+

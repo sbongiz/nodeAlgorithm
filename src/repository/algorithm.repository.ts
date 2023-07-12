@@ -1,4 +1,4 @@
-import * as lodash from 'lodash';
+import lodash from 'lodash';
 import { EntityTypeEnum } from '../enums/entityTypeEnum.enum';
 import { TableEnum } from '../enums/table.enum';
 import AerialwayModel from '../models/Aerialway.model';
@@ -9,6 +9,7 @@ import NodeModel from '../models/Node.model';
 import NodePisteModel from '../models/NodePiste.model';
 import PointModel, { IPoint } from '../models/Point.model';
 import PointPisteModel from '../models/PointPiste.model';
+import { PositionModelDto } from '../models/PositionModelDto';
 import StationModel from '../models/Stations.model';
 import StationPisteModel from '../models/StationsPiste.model';
 import TracksModel from '../models/Tracks.model';
@@ -25,14 +26,34 @@ export class AlgorithmRepository {
     private trackList: any;
     private pointList: any;
 
+    private pointCache = new Map<string, any>();
+    private nodeCache = new Map<string, any>();
+    private trackCache = new Map<string, any>();
+
     constructor() { }
-    public setRepository(nodeList: any, trackList: any, pointList: any, stationList: any, aNodeList: any, aerialwayList: any) {
-        this.nodeList = nodeList;
-        this.trackList = trackList;
-        this.pointList = pointList;
-        this.stationList = stationList;
-        this.aNodeList = aNodeList;
-        this.aerialwayList = aerialwayList;
+    public updateData(nodes: any, points: any, tracks: any, aerialway: any, aNodes: any, stations: any): void {
+        if (nodes != null) {
+            this.nodeList.push(nodes);
+        }
+        if (points != null) {
+            this.pointList.push(points);
+        }
+
+        if (tracks != null) {
+            this.trackList.push(tracks);
+        }
+
+        if (aerialway != null) {
+            this.aerialwayList.push(aerialway);
+        }
+
+        if (aNodes != null) {
+            this.aNodeList.push(aNodes);
+        }
+
+        if (stations != null) {
+            this.stationList.push(stations);
+        }
     }
 
     public resetRepository() {
@@ -44,12 +65,49 @@ export class AlgorithmRepository {
         this.aerialwayList = [];
     }
 
-    public filterTracksByPoint(point: any) {
-        return this.trackList.filter((x: { i: any; }) => point.t.includes(x.i));
+    public resetData() {
+            this.nodeList = [];
+            this.pointList = [];
+            this.trackList = [];
+            this.aerialwayList = [];
+            this.aNodeList = [];
+            this.stationList = [];
+            this.pointCache = new Map<string, any>();
+            this.nodeCache = new Map<string, any>();
+            this.trackCache = new Map<string, any>();
     }
 
-    public findTrackById(trackId: any) {
-        return this.trackList.find((x: { i: any; }) => x.i == trackId);
+
+    public findPointsByZone(zoneId: PositionModelDto): any {
+        var points = this.pointList.find((x: any) => {
+            return x.zoneId.equals(zoneId)
+        })
+        return points.list;
+    }
+
+
+    public filterTracksByPoint(point: any, zoneId: any) {
+        var tracks = this.trackList.find((x: any) => {
+            return x.zoneId.equals(zoneId)
+        })
+        return tracks.list.filter((x: any) => point.t.includes(x.i));
+    }
+
+    public findTrackById(id: any) {
+        var track = this.trackCache.get(id);
+
+        if (track == undefined) {
+            for (const element of this.trackList) {
+                var el = element.list.find((track: any) => track.i == id)
+                if (!!el) {
+                    track = el;
+                    this.trackCache.set(track.i, track)
+                    break;
+                }
+            }
+        }
+
+        return track;
     }
 
     public findTracksByIds(tracks: any) {
@@ -72,50 +130,19 @@ export class AlgorithmRepository {
         return result;
     }
 
-    public findNodeById(nodeId: any, useAerialway: any) {
-        var result;
+    public findNodeById(id: any) {
+        var node = this.nodeCache.get(id);
 
-        result = this.nodeList.filter((x: { i: any; }) => x.i == nodeId);
-
-
-        if (useAerialway && result.length == 0) {
-            result = this.aNodeList.filter((x: { i: any; }) => x.i == nodeId);
-        }
-
-        var node = lodash.cloneDeep(result[0]);
-
-        if (result.length > 2) {
-            result = lodash.uniqWith(result, (nodeA: any, nodeB: any) => nodeA.i === nodeB.i && nodeA.x === nodeB.x && nodeA.y == nodeB.y);
-        }
-
-        if (result.length == 2) {
-            node.n = lodash.union(result[0].n, result[1].n);
-
-            var connectedDistance: Map<string, string[]> = new Map(Object.entries(result[0].d));
-            var connectedTrack: Map<string, string[]> = new Map(Object.entries(result[0].t));
-            var connectedDistance1: Map<string, string[]> = new Map(Object.entries(result[1].d));
-            var connectedTrack1: Map<string, string[]> = new Map(Object.entries(result[1].t));
-
-            connectedDistance1.forEach((value, key) => {
-                if (!connectedDistance.has(key)) {
-                    connectedDistance.set(key, value);
+        if (node == undefined) {
+            for (const element of this.nodeList) {
+                var el = element.list.find((node: any) => node.i == id)
+                if (!!el) {
+                    node = el;
+                    this.nodeCache.set(node.i, node);
+                    break;
                 }
-            });
-
-            connectedTrack1.forEach((value, key) => {
-                if (!connectedTrack.has(key)) {
-                    connectedTrack.set(key, value);
-                }
-            });
-
-            node.d = connectedDistance;
-            node.t = connectedTrack;
-
-        } else if (result.length == 1) {
-            node.d = new Map(Object.entries(result[0].d));
-            node.t = new Map(Object.entries(result[0].t));
+            }
         }
-
         return node;
     }
 
@@ -327,26 +354,26 @@ export class AlgorithmRepository {
         return res;
     }
 
-    public async findAllByZoneId(entity: EntityTypeEnum, zoneId: any): Promise<any> {
+    public async findAllByZoneId(entity: EntityTypeEnum, zoneId: PositionModelDto): Promise<any> {
         var res: any = [];
         if (entity == EntityTypeEnum.Points) {
-            res = await PointModel.findOne({ 'x': zoneId[0], 'y': zoneId[1] }).lean();
+            res = await PointModel.findOne({ 'x': zoneId.lng.toFixed(2), 'y': zoneId.lat.toFixed(2) }).lean();
         } else if (entity == EntityTypeEnum.Nodes) {
-            res = await NodeModel.findOne({ 'x': zoneId[0], 'y': zoneId[1] }).lean();
+            res = await NodeModel.findOne({ 'x': zoneId.lng.toFixed(2), 'y': zoneId.lat.toFixed(2) }).lean();
         } else if (entity == EntityTypeEnum.Tracks) {
-            res = await TracksModel.findOne({ 'x': zoneId[0], 'y': zoneId[1] }).lean();
+            res = await TracksModel.findOne({ 'x': zoneId.lng.toFixed(2), 'y': zoneId.lat.toFixed(2) }).lean();
         } else if (entity == EntityTypeEnum.ANodes) {
-            res = await ANodesModel.findOne({ 'x': zoneId[0], 'y': zoneId[1] }).lean();
+            res = await ANodesModel.findOne({ 'x': zoneId.lng.toFixed(2), 'y': zoneId.lat.toFixed(2) }).lean();
         } else if (entity == EntityTypeEnum.Stations) {
-            res = await StationModel.findOne({ 'x': zoneId[0], 'y': zoneId[1] }).lean();
+            res = await StationModel.findOne({ 'x': zoneId.lng.toFixed(2), 'y': zoneId.lat.toFixed(2) }).lean();
         } else if (entity == EntityTypeEnum.AerialWay) {
-            res = await AerialwayModel.findOne({ 'x': zoneId[0], 'y': zoneId[1] }).lean();
+            res = await AerialwayModel.findOne({ 'x': zoneId.lng.toFixed(2), 'y': zoneId.lat.toFixed(2) }).lean();
         }
 
         if(res != null) {
             return res.l;
         } else {
-            console.log("NO ZONE FOUND IN DB: " + zoneId[0] + " " + zoneId[1]);
+            console.log("NO ZONE FOUND IN DB: " + zoneId.lng + " " + zoneId.lat);
             return [];
         }
     }
