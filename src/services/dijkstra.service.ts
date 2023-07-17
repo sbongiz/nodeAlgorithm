@@ -348,16 +348,30 @@ export class DijkstraService {
         var pointIndex = pointInTrack.indexOf(point.i);
         var nodeIndex = pointInTrack.indexOf(node.i)
         var res;
+
+        let indices;
+
         if (nodeIndex != -1 && pointIndex != -1) {
+            indices = pointInTrack.slice(pointIndex, nodeIndex + 1);
             res = coordinatesInTrack.slice(pointIndex, nodeIndex + 1);
             if (type == "start") {
                 if (pointIndex < nodeIndex) {
                     res = res.reverse();
+                    indices = indices.reverse()
                 }
             } else {
                 if (pointIndex > nodeIndex) {
                     res = res.reverse();
+                    indices = indices.reverse()
                 }
+            }
+
+            for (let i in indices) {
+                let p = this.algorithmRepository.findPointById(indices[i])
+                if (res[i].length < 3) {
+                    res[i].push(p.e)
+                }
+                
             }
 
             return res;
@@ -372,12 +386,24 @@ export class DijkstraService {
         var endNodeIndex = pointInTrack.indexOf(endNode.i)
         var res;
 
+        let indices;
+        
         if (startNodeIndex != -1 && endNodeIndex != -1) {
             if (startNodeIndex < endNodeIndex) {
+                indices = pointInTrack.slice(startNodeIndex, endNodeIndex + 1)
                 res = coordinatesInTrack.slice(startNodeIndex, endNodeIndex + 1);
             } else {
+                indices = pointInTrack.slice(endNodeIndex, startNodeIndex + 1)
+                indices = indices.reverse()
                 res = coordinatesInTrack.slice(endNodeIndex, startNodeIndex + 1);
                 res = res.reverse();
+            }
+
+            for (let i in indices) {
+                let p = this.algorithmRepository.findPointById(indices[i])
+                if (res[i].length < 3) {
+                    res[i].push(p.e)
+                }
             }
 
             return res;
