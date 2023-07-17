@@ -119,15 +119,20 @@ export class AlgorithmRepository {
         return resultTracks;
     }
 
-    public findPointById(pointId: any, useAerialway: any) {
-        var result;
-        result = this.pointList.find((x: { i: any; }) => x.i == pointId);
+    public findPointById(id: any) {
+        var point = this.pointCache.get(id);
 
-
-        if (useAerialway && result == undefined) {
-            result = this.findStationsById(pointId);
+        if (point == undefined) {
+            for (const element of this.pointList) {
+                var el = element.list.find((point: any) => point.i == id)
+                if (!!el) {
+                    point = el;
+                    this.pointCache.set(point.i, point);
+                    break;
+                }
+            }
         }
-        return result;
+        return point;
     }
 
     public findNodeById(id: any) {
